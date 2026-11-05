@@ -1,0 +1,20 @@
+[workspace]
+members = ["crates/telos-core", "crates/telos-store", "crates/telos-runtime", "crates/telos-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "io-std", "net", "signal", "sync", "fs"] }
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"

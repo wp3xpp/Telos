@@ -1,0 +1,13 @@
+/target/
+/.telos/
+__pycache__/
+*.pyc
+
+# Local runtime and verification records
+/docs/evidence/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+.DS_Store

@@ -1,0 +1,22 @@
+[package]
+name = "telos-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "telos"
+path = "src/main.rs"
+
+[dependencies]
+telos-core = { path = "../telos-core" }
+telos-store = { path = "../telos-store" }
+telos-runtime = { path = "../telos-runtime" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+clap.workspace = true
+sha2.workspace = true
+libc.workspace = true
+sqlx.workspace = true
