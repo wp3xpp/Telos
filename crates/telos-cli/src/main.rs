@@ -4,6 +4,7 @@ mod collector;
 mod delivery;
 mod install;
 mod observation_report;
+mod readiness;
 mod retention;
 mod review;
 mod service;
@@ -44,6 +45,14 @@ enum Commands {
         once: bool,
         #[arg(long, default_value_t = 600)]
         wait_seconds: u64,
+    },
+    /// Show configuration gaps, collection evidence, schedule and first verdict.
+    Readiness {
+        #[arg(long)]
+        id: String,
+        /// Emit structured JSON instead of the terminal summary.
+        #[arg(long)]
+        json: bool,
     },
     /// Export a saved delivery patch and integrity-checked acceptance evidence.
     Review {
@@ -382,6 +391,14 @@ async fn main() -> Result<()> {
         } => {
             let result = delivery::follow(&cli.state_dir, &id, wait_seconds, once).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Commands::Readiness { id, json } => {
+            let report = daemon::call(&cli.state_dir, &daemon::Request::Readiness { id }).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                readiness::print(&report)?;
+            }
         }
         Commands::Review { id, output } => {
             let result = review::export(&cli.state_dir, &id, &output).await?;

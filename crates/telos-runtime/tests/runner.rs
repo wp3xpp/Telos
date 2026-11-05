@@ -26,6 +26,9 @@ if 'detached-child' in prompt:
 elif 'flood-output' in prompt:
     print('x'*100000,flush=True)
     time.sleep(90)
+elif 'long-diagnostics' in prompt:
+    print(json.dumps({'type':'item.completed','item':{'output':'é'*50000}},ensure_ascii=False),flush=True)
+    result.write_text(json.dumps({'status':'done','summary':'fixture completed','evidence_paths':[],'remaining_work':[]}))
 elif 'invalid-result' in prompt:
     result.write_text('{"wrong":"shape"}')
 else:
@@ -129,8 +132,23 @@ async fn explicit_cancel_cleans_child_and_output_limit_stops_job() -> Result<()>
     let (_tx, rx) = watch::channel(false);
     let mut spec = f.spec("flood-output");
     spec.max_output_bytes = 1024;
+    spec.sandbox = Sandbox::WorkspaceWrite;
     let report = f.runner().run(&spec, &f.root.join("flood"), rx).await?;
     assert!(report.reason.contains("output limit"));
     assert!(std::fs::metadata(f.root.join("flood/events.jsonl"))?.len() <= 1024);
+    Ok(())
+}
+
+#[tokio::test]
+async fn read_only_completion_survives_a_cut_diagnostic_frame() -> Result<()> {
+    let f = Fixture::new();
+    let (_tx, rx) = watch::channel(false);
+    let mut spec = f.spec("long-diagnostics");
+    spec.max_output_bytes = 1024;
+    let report = f.runner().run(&spec, &f.root.join("run"), rx).await?;
+    assert_eq!(report.outcome, ExecutionOutcome::Succeeded);
+    assert!(report.output_truncated && report.cleanup_confirmed);
+    assert_eq!(report.usage.unwrap()["output_tokens"], 10);
+    assert!(std::fs::metadata(f.root.join("run/events.jsonl"))?.len() <= 1024);
     Ok(())
 }

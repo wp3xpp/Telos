@@ -10,7 +10,7 @@ use std::{io::Read, os::unix::fs::OpenOptionsExt, path::Path};
 use telos_core::VerificationPlan;
 use telos_store::Store;
 
-fn read(path: &Path, limit: u64) -> Result<Vec<u8>> {
+pub(crate) fn read(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let parent = path.parent().context("recovery evidence parent missing")?;
     ensure!(
         parent.canonicalize()? == parent,

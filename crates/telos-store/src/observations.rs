@@ -59,7 +59,7 @@ impl Store {
         let record = Self::get_in(&mut tx, goal).await?;
         ensure!(
             record.revision == revision
-                && record.state == LoopState::Active
+                && matches!(record.state, LoopState::Active | LoopState::Blocked)
                 && record.kind == LoopKind::Continuous,
             "inactive or stale collection"
         );

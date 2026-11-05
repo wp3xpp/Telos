@@ -44,6 +44,8 @@ pub struct RunReport {
     pub usage: Option<Value>,
     pub run_dir: PathBuf,
     pub cleanup_confirmed: bool,
+    #[serde(default)]
+    pub output_truncated: bool,
 }
 
 pub fn result_schema() -> Value {
@@ -61,11 +63,22 @@ pub struct CodexRunner {
 }
 
 pub(crate) async fn capture<R: AsyncRead + Unpin>(
+    input: R,
+    path: PathBuf,
+    total: Arc<AtomicU64>,
+    overflow: Arc<AtomicBool>,
+    limit: u64,
+) -> Result<()> {
+    capture_with(input, path, total, overflow, limit, |_| {}).await
+}
+
+async fn capture_with<R: AsyncRead + Unpin>(
     mut input: R,
     path: PathBuf,
     total: Arc<AtomicU64>,
     overflow: Arc<AtomicBool>,
     limit: u64,
+    mut observe: impl FnMut(&[u8]),
 ) -> Result<()> {
     let mut file = tokio::fs::File::create(path).await?;
     let mut buf = [0u8; 8192];
@@ -74,6 +87,7 @@ pub(crate) async fn capture<R: AsyncRead + Unpin>(
         if n == 0 {
             break;
         }
+        observe(&buf[..n]);
         let old = total.fetch_add(n as u64, Ordering::SeqCst);
         let keep = limit.saturating_sub(old).min(n as u64) as usize;
         if keep > 0 {
@@ -85,6 +99,58 @@ pub(crate) async fn capture<R: AsyncRead + Unpin>(
     }
     file.sync_all().await?;
     Ok(())
+}
+
+// Parse the incoming stream independently of the retained diagnostic bytes.
+#[derive(Default)]
+struct EventStream {
+    line: Vec<u8>,
+    oversized: bool,
+    invalid: bool,
+    thread_id: Option<String>,
+    usage: Option<Value>,
+    completed: bool,
+    failed: bool,
+}
+
+impl EventStream {
+    fn observe(&mut self, bytes: &[u8]) {
+        const MAX_FRAME: usize = 1024 * 1024;
+        for part in bytes.split_inclusive(|byte| *byte == b'\n') {
+            if self.line.len() + part.len() > MAX_FRAME {
+                self.oversized = true;
+            }
+            if !self.oversized {
+                self.line.extend_from_slice(part);
+            }
+            if part.ends_with(b"\n") {
+                self.finish_line();
+            }
+        }
+    }
+
+    fn finish_line(&mut self) {
+        if self.oversized {
+            self.invalid = true;
+        } else if !self.line.is_empty() {
+            match serde_json::from_slice::<Value>(&self.line) {
+                Ok(event) => match event["type"].as_str() {
+                    Some("thread.started") => {
+                        self.thread_id = event["thread_id"].as_str().map(str::to_owned);
+                    }
+                    Some("turn.completed") => {
+                        self.completed = true;
+                        self.usage = event.get("usage").cloned();
+                    }
+                    Some("turn.failed") => self.failed = true,
+                    _ => {}
+                },
+                Err(_) => self.invalid = true,
+            }
+        }
+        self.line.clear();
+        self.oversized = false;
+    }
 }
 
 impl CodexRunner {
@@ -164,13 +230,25 @@ impl CodexRunner {
         let processes_path = run_dir.join("processes.json");
         let total = Arc::new(AtomicU64::new(0));
         let overflow = Arc::new(AtomicBool::new(false));
-        let stdout = tokio::spawn(capture(
-            child.stdout.take().context("missing stdout")?,
-            run_dir.join("events.jsonl"),
-            total.clone(),
-            overflow.clone(),
-            spec.max_output_bytes,
-        ));
+        let event_input = child.stdout.take().context("missing stdout")?;
+        let event_path = run_dir.join("events.jsonl");
+        let event_total = total.clone();
+        let event_overflow = overflow.clone();
+        let limit = spec.max_output_bytes;
+        let mut stdout = tokio::spawn(async move {
+            let mut stream = EventStream::default();
+            capture_with(
+                event_input,
+                event_path,
+                event_total,
+                event_overflow,
+                limit,
+                |bytes| stream.observe(bytes),
+            )
+            .await?;
+            stream.finish_line();
+            Ok::<_, anyhow::Error>(stream)
+        });
         let stderr = tokio::spawn(capture(
             child.stderr.take().context("missing stderr")?,
             run_dir.join("stderr.log"),
@@ -195,7 +273,7 @@ impl CodexRunner {
                         Ok(table)=> {owned.observe(&table); if let Err(e)=owned.persist(&processes_path).await {reason=format!("process journal error: {e}"); break;}},
                         Err(e)=> {reason=format!("process inspection failed: {e}");break;}
                     }
-                    if overflow.load(Ordering::SeqCst) {reason="output limit exceeded".into();break;}
+                    if spec.sandbox != Sandbox::ReadOnly && overflow.load(Ordering::SeqCst) {reason="output limit exceeded".into();break;}
                     if result_path.exists() {
                         match std::fs::metadata(&result_path) {
                             Ok(m) if m.len()>spec.max_output_bytes=>{reason="result file limit exceeded".into();break;},
@@ -231,42 +309,43 @@ impl CodexRunner {
         }
         let _ = input.await;
         // A descendant holding a pipe cannot keep this operation alive indefinitely.
-        for mut handle in [stdout, stderr] {
-            match tokio::time::timeout(Duration::from_secs(3), &mut handle).await {
-                Ok(Ok(Ok(()))) => {}
-                Ok(other) => reason = format!("{reason}; output capture failed: {other:?}"),
-                Err(_) => {
-                    handle.abort();
-                    reason = format!("{reason}; output pipe did not close");
-                }
+        let events = match tokio::time::timeout(Duration::from_secs(3), &mut stdout).await {
+            Ok(Ok(Ok(events))) => events,
+            Ok(Ok(Err(error))) => {
+                reason = format!("{reason}; output capture failed: {error}");
+                EventStream::default()
+            }
+            Ok(Err(error)) => {
+                reason = format!("{reason}; output capture failed: {error}");
+                EventStream::default()
+            }
+            Err(_) => {
+                stdout.abort();
+                reason = format!("{reason}; output pipe did not close");
+                EventStream::default()
+            }
+        };
+        let mut stderr = stderr;
+        match tokio::time::timeout(Duration::from_secs(3), &mut stderr).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(other) => reason = format!("{reason}; output capture failed: {other:?}"),
+            Err(_) => {
+                stderr.abort();
+                reason = format!("{reason}; output pipe did not close");
             }
         }
-        let mut thread_id = None;
-        let mut usage = None;
-        let mut turn_completed = false;
-        let mut invalid_events = false;
-        let events = tokio::fs::read_to_string(run_dir.join("events.jsonl")).await?;
-        for line in events.lines() {
-            match serde_json::from_str::<Value>(line) {
-                Ok(event) => match event.get("type").and_then(Value::as_str) {
-                    Some("thread.started") => {
-                        thread_id = event
-                            .get("thread_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    }
-                    Some("turn.completed") => {
-                        turn_completed = true;
-                        usage = event.get("usage").cloned();
-                    }
-                    Some("turn.failed") => reason = format!("{reason}; Codex turn failed"),
-                    _ => {}
-                },
-                Err(_) => invalid_events = true,
-            }
+        let output_truncated = overflow.load(Ordering::SeqCst);
+        if spec.sandbox != Sandbox::ReadOnly && output_truncated && reason.is_empty() {
+            reason = "output limit exceeded".into();
         }
-        if invalid_events {
+        if events.invalid {
             reason = format!("{reason}; invalid JSON event stream");
+        }
+        if events.failed {
+            reason = format!("{reason}; Codex turn failed");
+        }
+        if !events.completed && reason.is_empty() {
+            reason = "Codex terminal completion event missing".into();
         }
         let mut result = None;
         if result_path.exists() && std::fs::metadata(&result_path)?.len() <= spec.max_output_bytes {
@@ -278,7 +357,7 @@ impl CodexRunner {
             reason = format!("{reason}; result missing or too large");
         }
         let outcome =
-            if reason.is_empty() && exit_code == Some(0) && turn_completed && cleanup_confirmed {
+            if reason.is_empty() && exit_code == Some(0) && events.completed && cleanup_confirmed {
                 if result
                     .as_ref()
                     .is_some_and(|r| r.status == AgentStatus::Done)
@@ -303,10 +382,11 @@ impl CodexRunner {
             reason,
             exit_code,
             result,
-            thread_id,
-            usage,
+            thread_id: events.thread_id,
+            usage: events.usage,
             run_dir: run_dir.clone(),
             cleanup_confirmed,
+            output_truncated,
         };
         tokio::fs::write(
             run_dir.join("report.json"),

@@ -66,6 +66,10 @@ print(json.dumps({'type':'turn.completed','usage':{'output_tokens':0}}))
    time.sleep(.2)
   raise RuntimeError('fixture acceptance deadline exceeded')
  def verify(goal):return call({'op':'verify_loop','id':goal,'revision':1})
+ def readiness(goal, structured=True):
+  args=[str(binary),'--state-dir',str(state),'readiness','--id',goal]
+  result=subprocess.run(args+(['--json'] if structured else []),check=True,capture_output=True,text=True,timeout=15)
+  return json.loads(result.stdout) if structured else result.stdout
  def artifact(evidence_id):
   result=bytearray();offset=0
   while True:
@@ -80,9 +84,17 @@ print(json.dumps({'type':'turn.completed','usage':{'output_tokens':0}}))
    except AssertionError:return None
   wait(ready)
   call({'op':'register_project','id':'fixture','root':str(project)})
-  call({'op':'configure_project','id':'fixture','expected_revision':0,'policy':{'enabled':True,'sandbox':'workspace_write','timeout_seconds':30,'max_output_bytes':131072,'max_steps_per_cycle':2}})
   parent=call({'op':'create_loop','project_id':'fixture','kind':'continuous','name':'Generic project observation','contract':{'goal':'Observe actual fixture state','delivery_scope':'Read-only fixture; no external actions','criteria':[{'id':'health','description':'Independent project predicate with fresh complete coverage'}],'interval_seconds':21600,'max_attempts':2}})
   parent_id=parent['id'];report['parent_id']=parent_id
+  initial_events=call({'op':'events','id':parent_id})
+  initial=readiness(parent_id)
+  assert parent['next_due_at'] is not None
+  assert initial['configuration']['missing']==['execution_policy_missing','verification_plan_missing']
+  assert initial['collection']['status']=='no_evidence' and initial['first_verification'] is None
+  assert initial['inspection']['status']=='not_scheduled' and initial['inspection']['next_due_at'] is None
+  assert 'Inspection: not scheduled' in readiness(parent_id,structured=False)
+  assert call({'op':'events','id':parent_id})==initial_events
+  call({'op':'configure_project','id':'fixture','expected_revision':0,'policy':{'enabled':True,'sandbox':'workspace_write','timeout_seconds':30,'max_output_bytes':131072,'max_steps_per_cycle':2}})
   started_goal=call({'op':'start_loop','id':parent_id,'revision':1,'request_key':'inspect-fixture'})
   wait(lambda:call({'op':'loop_context','id':parent_id,'revision':1})['recent_execution'])
   policy={'source_id':'fixture-source','window_seconds':5,'max_age_seconds':10,'poll_interval_seconds':3600,'after_stage':'activate-fixture'}
@@ -108,6 +120,12 @@ print(json.dumps({'type':'turn.completed','usage':{'output_tokens':0}}))
   batch={'source_id':'fixture-source','request_key':'range-1','expected_version':0,'generation':'generation-1','start':0,'end':262144,'source_size':1048576,'gap_reason':None,'signals':[signal]*111,'evidence':['fixture-range-digest']}
   first=call({'op':'record_observation_batch','id':parent_id,'revision':1,'batch':batch});assert first['new_signals']==1
   assert call({'op':'record_observation_batch','id':parent_id,'revision':1,'batch':batch})==first
+  collected=readiness(parent_id)
+  assert collected['configuration']['missing']==[]
+  assert collected['collection']['status']=='evidence_recorded'
+  assert collected['collection']['receipts'][0]['backlog_bytes']==786432
+  assert collected['inspection']['armed'] and collected['inspection']['next_due_at'] is None
+  assert collected['first_verification']['verdict']=='failed'
   set_measurement(value=1)
   assert verify(parent_id)['verdict']=='inconclusive','Known collection backlog must override a project pass'
   for index in range(2,5):
@@ -120,6 +138,7 @@ print(json.dumps({'type':'turn.completed','usage':{'output_tokens':0}}))
   call({'op':'configure_verification','id':child['id'],'revision':1,'expected_version':0,'plan':{'test_checks':[{'criterion_id':'value','command':{'program':'/bin/sh','args':['-c','test "$(cat value.txt)" = ready'],'readable_roots':['/bin','/usr/bin','/usr/lib','/System/Library'],'timeout_seconds':10,'max_output_bytes':4096}}]}})
   (Path(workspace['path'])/'value.txt').write_text('ready')
   assert verify(child['id'])['verdict']=='passed'
+  assert readiness(child['id'])['first_verification']['verdict']=='passed'
   call({'op':'associate_remediation','id':parent_id,'revision':1,'diagnosis_step_id':diagnosis,'delivery_loop_id':child['id'],'delivery_revision':1,'request_key':'fixture-association'})
   assert verify(parent_id)['verdict']=='inconclusive','Delivery pass alone must not establish recovery'
   delivery=call({'op':'delivery_result','id':child['id'],'revision':1})
@@ -135,6 +154,10 @@ print(json.dumps({'type':'turn.completed','usage':{'output_tokens':0}}))
   current=call({'op':'get_loop','id':parent_id});assert current['state']=='active'
   final=call({'op':'loop_context','id':parent_id,'revision':1});assert final['active_cycle_id'] is None
   assert final['remediation_links']['items'][0]['recovery_check']['verdict']=='passed'
+  recovered=readiness(parent_id)
+  assert recovered['inspection']['armed'] and recovered['inspection']['next_due_at']==current['next_due_at']
+  assert recovered['first_verification']==collected['first_verification']
+  report['readiness']={'initial':initial,'collected':collected,'recovered':recovered}
   report.update(status='passed',elapsed_seconds=round(time.monotonic()-started,2),checks={'native_readonly_probe_enforced':True,'zero_exit_failed_assertion_not_accepted':True,'missing_stale_gap_backlog_wrong_binding_not_accepted':True,'collection_backlog_overrides_pass':True,'bounded_catchup_and_durable_cursor':True,'physical_episode_dedup':True,'continuous_readonly_under_project_write_grant':True,'delivery_does_not_accept_parent':True,'stage_requires_fresh_window_and_measured_subject':True,'parent_recovery_is_independent':True},final=result)
  finally:
   daemon.terminate();daemon.wait(timeout=30);report['daemon_exit_code']=daemon.returncode

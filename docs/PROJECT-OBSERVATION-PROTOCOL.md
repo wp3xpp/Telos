@@ -201,9 +201,127 @@ recovery gate; unknown external effects require separate reconciliation, not ret
    coordinator perform a separately authorized finalization step, such as its
    commit/push procedure. This API does not automatically run that procedure.
 
-For a six-hour review plus five-minute recovery, configure separate criteria and
-window policies (21600 and 300 seconds). The analysis interval, collection cadence,
-probe polling and post-action observation window are distinct settings.
+The contract's analysis interval, the collector cadence, probe polling, and the
+required coverage window are separate settings. For example, a multi-hour review
+can use minute-by-minute collection and a five-minute post-action coverage window.
+
+## Check readiness for an existing goal
+
+Use the existing Loop ID and current contract revision throughout onboarding.
+Track these independently, since collection can run before managed analysis starts.
+
+```sh
+telos --state-dir /absolute/state readiness --id LOOP_ID
+telos --state-dir /absolute/state readiness --id LOOP_ID --json
+```
+
+The command reads one ledger snapshot from the running daemon. It reports missing
+or disabled execution policy, missing verification plan, receipts for the plan's
+sources, and the inspection schedule. An unarmed inspection displays `not scheduled`
+with a null `inspection.next_due_at`. An armed inspection with an open cycle also
+has a null next due time until that cycle closes. `first_verification` is the first
+recorded verdict for the current contract and plan versions, or null if none exists.
+
+| State | Read-only evidence available today |
+| --- | --- |
+| Goal recorded | `loop_get` returns the registered project, goal kind and current revision. |
+| Collection enabled | Inspect the project collector's service status and a recent capture. Read `observation_checkpoint` or `loop_context.project_observations` for the matching source's cursor, backlog and gap. A checkpoint alone can be historical. |
+| Inspection armed | `project_inspect` reports the current enabled execution policy. `loop_schedule.armed` must be true for the current contract and policy revisions. When false, display “not scheduled” even if `next_due_at` has a value. |
+| First verification passed | Check `loop_context.latest_verification` and its evidence for a current-revision pass using the intended source and observation window. Report the measured time separately from the schedule. |
+
+Before arming, confirm `telos_status` advertises `local.observation_json` and
+check the current `verification_plan_configured` audit event with `loop_events`
+and `event_body`. Compare the plan version, criteria, probe inputs and source IDs
+with the intended configuration. `loop_verification` reports ownership blockers.
+An empty observation list or absent verdict should be reported as missing evidence.
+
+Check collector liveness and input schema version using project-supplied evidence.
+The project collector also records collection failures in its evidence so the
+probe can account for them.
+
+## Minimal project integration and first acceptance
+
+1. **Collect.** Run a project-owned service with its own read-only source access.
+   At each tick, resume the committed generation and offset. Read bounded ranges
+   until caught up or the tick budget is spent. Size the cadence and budget from
+   measured input growth, including bursts. Record the source, evidence schema
+   version, measured subject fingerprint, collection window, cursor, backlog and
+   gaps in local evidence. Record failed attempts separately and leave the cursor
+   in place. Persist evidence before submitting `record_observation_batch`. Keep
+   the same request key and payload when retrying an uncertain submission.
+2. **Measure.** Use a local probe that reads the collector's evidence, validates
+   the schema and evaluates project predicates for the requested window. Include
+   an actual freshness measurement and deduplicate by physical resource and
+   recovery episode. Return inconclusive for missing, stale or incomplete evidence,
+   unresolved rotation gaps, backlog or unavailable collection. A quiet window can
+   pass when independent measurements establish full coverage and fresh data.
+3. **Compare before arming.** Collect a real read-only window with approved source
+   access. Run the project predicate in shadow mode against that evidence and
+   compare the outcome, source coverage and episode counts with a manual review of
+   the same window. Exercise the negative cases above using copied evidence. Run
+   the isolated protocol harness to check Telos binding and verdict handling.
+   `loop_verify` records a verdict and requires an active cycle, so use the project
+   probe or an isolated test cycle for shadow evaluation.
+4. **Enable and check the first run.** Once authorized, configure the existing
+   goal's project policy and acceptance plan through `configure_project` and
+   `configure_verification`, then start that goal with `loop_start`. Check the
+   accepted step, armed schedule, recorded observations and first independent
+   verdict. Keep “inspection armed” separate from “first verification passed.”
+
+Track detection, repair delivery and operational recovery separately. When a
+verified failure needs a fix, associate its diagnosis with a bounded delivery.
+Run any approved operational action through the project's own driver. Use the
+measured subject fingerprint and the fresh post-action window described above to
+verify recovery before any separately authorized finalization. Reconcile an
+unknown action outcome before issuing another action.
+
+## Recovery design for interrupted inspection
+
+The operator ingestion route accepts current-revision continuous Loops in
+`active` or `blocked`. A collector can keep submitting evidence while an
+operator reviews an interrupted inspection. Each receipt advances the cursor
+atomically. If submission is interrupted, retain the pending bytes and replay
+the exact request key and payload. Acknowledge the batch locally after Telos
+returns the committed receipt. Inspect any version conflict before proceeding.
+
+For a managed read-only inspection from an older runner that exited cleanly
+but was marked unknown after output truncation, an operator can submit
+`discard_inspection` through the local request interface. Bind the decision to
+the current blocked Loop and its execution evidence. Review the external
+effects independently before attesting reconciliation.
+
+```json
+{
+  "op": "discard_inspection",
+  "review": {
+    "loop_id": "LOOP_ID",
+    "revision": 1,
+    "expected_version": 6,
+    "cycle_id": "CYCLE_ID",
+    "step_id": "STEP_ID",
+    "generation": 1,
+    "evidence_id": "EXECUTION_EVIDENCE_ID",
+    "evidence_sha256": "EXECUTION_EVIDENCE_SHA256",
+    "decision_id": "operator-decision-key",
+    "external_effects_reconciled": true
+  }
+}
+```
+
+The daemon checks the recorded process identities, verifies the evidence hash
+and matches the recorded outcome and run generation to the ledger. The receipt
+records the disposition and preserves the original execution evidence and
+attempt count. Replaying the same decision returns the same receipt. The goal
+remains blocked until an operator resumes it. After collection catches up,
+resume the original cycle under existing authority and verify a fresh, fully
+covered window. Existing recovery and external-ownership fences still apply.
+
+For new read-only workers, diagnostic bytes are retained up to the configured
+budget, and complete events are parsed as they arrive within a separate frame
+bound. Truncation is recorded in the report. Completion requires a valid
+terminal event, a bounded structured result, a clean exit and confirmed process
+cleanup. Write workers and independent test commands retain their output limits
+as execution bounds.
 
 ## Reproduce protocol acceptance
 

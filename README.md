@@ -19,6 +19,22 @@ the frontend reviews the patch before applying it to your original project.
 no Web UI. Remote shared-test workflows, production remediation, and long-duration
 reliability still need further acceptance. This project is not an official OpenAI product.
 
+## When to use Telos
+
+Start with local code delivery that has an observable acceptance test. For
+example, add a CLI dry run in an isolated worktree, verify that it shows the
+planned changes and leaves the input intact, then review the saved patch and
+test evidence. The same goal can be followed across Codex sessions.
+
+Use a continuous Telos goal when each cycle needs evidence tied to a source,
+version and observation window, or when diagnosis, repair delivery and a fresh
+recovery check need separate records. Your project supplies the collector,
+acceptance checks and any operational action.
+
+For a quick edit, use Codex directly. For a read-only check that can be rerun
+safely, use a script and a scheduler. Keep its checkpoint and results if the
+next run needs them. See the [local delivery flow](docs/MAIN-FLOW.md).
+
 ## How the Loop works
 
 ```mermaid

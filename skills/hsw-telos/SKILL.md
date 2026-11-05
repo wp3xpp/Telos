@@ -1,12 +1,27 @@
 ---
 name: hsw-telos
-description: 在 Codex 中使用 Telos 管理持久化目标，查询证据和进度，修改、暂停或恢复 Loop。用于用户明确要求 Telos 跟进目标或管理已有 Loop；普通一次性编码不自动创建 Loop。
+description: 在 Codex 中管理 Telos 持久化目标、执行进度和独立验收。用户明确要求用 Telos 交付可验收任务、跟进持续观察或管理已有 Loop 时使用。普通一次性编辑和可安全重跑的定时检查按原工作流处理。
 ---
 
 # Telos
 
 Telos stores goal contracts and execution history outside chat. Use the connected
 Telos MCP tools; do not edit its SQLite files or Codex's internal databases.
+
+## Choose a workflow
+
+| Request | Workflow |
+| --- | --- |
+| “Use Telos to add a CLI dry run. Verify it lists changes and preserves the input. Give me the patch.” | Use a delivery goal. Pin the base, choose independent checks, and return the reviewed artifact and evidence within the authorized attempt budget. |
+| “Use Telos to track migration integrity over several windows.” | Use a continuous goal when the project supplies collected evidence and independent predicates. Inspect readiness and confirm schedule authority before starting. |
+| “Track whether the service recovered after the fix goes out.” | Keep diagnosis, repair delivery and recovery distinct. Bind the project action receipt to the accepted artifact and check a fresh post-action window. |
+| “Check these logs every few hours and send the result.” | Use the existing script and scheduler when checks are read-only and safe to repeat. Keep a project checkpoint and per-run evidence as needed. |
+| “Fix this typo” or “review this diff.” | Handle it in the current Codex chat. |
+
+Use Telos when the user asks for it or is managing an existing Telos goal.
+Prefer delivery when the result is a reviewable artifact with an independent
+test. Choose continuous observation when durable cycle evidence or recovery
+decisions are part of the requirement. For an existing goal, reuse its Loop ID.
 
 ## Recovery review mode
 
@@ -66,6 +81,9 @@ readable historical evidence does not prove current external outcomes.
   Managed scheduling and project-owned collection are separate. Inspect
   `project_observations` for cursor versions, backlog and coverage; use evidence
   references for independent measurements. Collection alone is not business health.
+  When supported by the installed client and daemon, `readiness --id ID` shows
+  configuration gaps, collection receipts, effective scheduling and first verification.
+  Report an unarmed inspection as unscheduled and a blocked cycle as blocked.
   `follow --once` returns a current snapshot without dispatching more work.
 - Use `loop_get` and `loop_events` for authoritative state and history. Explain the
   current goal, last observed progress, evidence, remaining gap, and next action.

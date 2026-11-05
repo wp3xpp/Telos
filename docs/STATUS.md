@@ -10,6 +10,10 @@ acceptance. Start with the [README](../README.md) and [daily-use guide](DAILY-US
   independent sandbox checks, bounded correction, and a saved patch for review.
 - Continuous observation: scheduled cycles, read-only inspection and diagnosis,
   collection cursors, deduplicated signals and independent health checks.
+- Readiness: inspect configuration gaps, collection receipts, scheduling and the
+  first recorded verdict for an existing Loop with `telos readiness --id LOOP_ID`.
+- Inspection recovery: collection receipts remain available for blocked goals.
+  Operators can reconcile an eligible historical read-only output truncation.
 - Recovery: link a diagnosis to a separate delivery, record a project action receipt,
   then require a fresh observation window for the measured action subject.
 - Operations: stdio MCP, a local daemon, macOS launchd services, local notifications,
@@ -35,7 +39,7 @@ does not bundle business integrations.
 
 ## Validation
 
-The framework regression suite contains 150 passing tests. Formatting, Clippy
+The framework regression suite contains 151 passing tests. Formatting, Clippy
 with warnings denied, and a locked build also pass. Run the commands in the README
 to verify your checkout.
 [TESTING.md](TESTING.md) describes reproducible integration harnesses and their

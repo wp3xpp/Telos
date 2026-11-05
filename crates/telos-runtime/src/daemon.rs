@@ -72,6 +72,10 @@ pub enum Request {
     ReconcileVerification {
         lease_id: String,
     },
+    /// Operator only: discard a reconciled read-only inspection.
+    DiscardInspection {
+        review: telos_store::InspectionDisposition,
+    },
     /// Operator only: prepare a detached Git worktree under an existing write policy.
     PrepareWorkspace {
         id: String,
@@ -100,6 +104,9 @@ pub enum Request {
     },
     NotificationStatus,
     ScheduleStatus {
+        id: String,
+    },
+    Readiness {
         id: String,
     },
     ConfigureVerification {
@@ -430,8 +437,25 @@ async fn dispatch(
         }
 
         Request::VerificationStatus { id } => store.verification_status(&id).await,
+        Request::Readiness { id } => store.readiness(&id).await,
         Request::ReconcileVerification { lease_id } => {
             crate::verification_recovery::reconcile(store, &lease_id).await
+        }
+        Request::DiscardInspection { review } => {
+            let journal = store.inspection_run_dir(&review)?.join("processes.json");
+            let bytes = crate::verification_recovery::read(&journal, 1024 * 1024)?;
+            let owned: ProcessSet = serde_json::from_slice(&bytes)?;
+            ensure!(
+                !owned.identities.is_empty(),
+                "inspection process identities are missing"
+            );
+            ensure!(
+                owned.alive_in(&snapshot().await?).is_empty(),
+                "inspection processes still running"
+            );
+            store
+                .discard_inspection(&review, &format!("{:x}", Sha256::digest(&bytes)))
+                .await
         }
         Request::PrepareWorkspace {
             id,
@@ -822,6 +846,7 @@ async fn scheduler(
                         usage: None,
                         run_dir: run_dir.clone(),
                         cleanup_confirmed: true,
+                        output_truncated: false,
                     });
                 }
             }
